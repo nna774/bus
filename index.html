@@ -36,7 +36,22 @@
     font-weight: 600;
     color: var(--muted);
     margin: 0;
-    text-align: center;
+  }
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .header button {
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.2);
+    background: transparent;
+    color: var(--text);
+    cursor: pointer;
+    flex: none;
   }
   .panel {
     background: var(--panel);
@@ -157,7 +172,10 @@
 </head>
 <body>
 <div id="app">
-  <h1>バス渋滞パズル（仮）</h1>
+  <div class="header">
+    <h1>バス渋滞パズル（仮）</h1>
+    <button id="regenerate">作り直す</button>
+  </div>
   <div class="panel">
     <div id="queue" class="queue"></div>
   </div>
@@ -168,7 +186,7 @@
 </div>
 <div id="overlay" class="overlay hidden">
   <div id="overlay-text"></div>
-  <button id="overlay-restart">もう一度</button>
+  <button id="overlay-restart">次の面</button>
 </div>
 <script>
 "use strict";
@@ -180,6 +198,9 @@ const COLOR_HEX = {
   green: "#27ae60",
   orange: "#f39c12",
   purple: "#9b59b6",
+  teal: "#1abc9c",
+  pink: "#e84393",
+  yellow: "#f1c40f",
 };
 
 // ---------- 純粋ロジック（Node からも呼べる。DOM に触らない） ----------
@@ -341,7 +362,207 @@ function verifySolvable(level) {
   return dfs(start);
 }
 
-// ---------- v1 検証用レベル（手作り。生成器は未実装） ----------
+// ---------- レベル生成器 ----------
+// arrow の carve→peel を踏襲: 「バスの配置」と「向きの決定」を分離する。
+// 1. place: 直線バスを重ならないようランダムに敷き詰める（向きは未定）。
+// 2. peel: 満杯の盤から「今のこの向きなら盤外までクリア」なバスを1本ずつ剥がす。
+//    剥がした順がそのまま可解な脱出順になる（arrowのDESIGN_NOTES参照）。
+// 3. 色とキューの割当: peel順の各バスにユニーク色を振り、キューは
+//    「色のマルチセットをランダムに並べ替えたもの」から verifySolvable が
+//    通るものを探す。peel順どおりに一色ずつ流し込むと一本道の退屈な面に
+//    なってしまうため、あえてシャッフルしてから解けるか検算する。
+
+function placeBuses(gridW, gridH, opts) {
+  const occ = Array.from({ length: gridH }, () => new Array(gridW).fill(null));
+  const buses = [];
+  let nextId = 1;
+  const targetCells = Math.floor(gridW * gridH * opts.density);
+  const lenWeights = opts.lenWeights;
+  function pickLen() {
+    const r = Math.random();
+    let acc = 0;
+    for (const [len, w] of lenWeights) {
+      acc += w;
+      if (r <= acc) return len;
+    }
+    return lenWeights[lenWeights.length - 1][0];
+  }
+  let filled = 0;
+  let attempts = 0;
+  while (filled < targetCells && attempts < opts.maxPlaceAttempts) {
+    attempts++;
+    const orientation = Math.random() < 0.5 ? "H" : "V";
+    const len = pickLen();
+    let r, c;
+    if (orientation === "H") {
+      if (len > gridW) continue;
+      r = Math.floor(Math.random() * gridH);
+      c = Math.floor(Math.random() * (gridW - len + 1));
+    } else {
+      if (len > gridH) continue;
+      c = Math.floor(Math.random() * gridW);
+      r = Math.floor(Math.random() * (gridH - len + 1));
+    }
+    let ok = true;
+    for (let i = 0; i < len && ok; i++) {
+      const rr = orientation === "H" ? r : r + i;
+      const cc = orientation === "H" ? c + i : c;
+      if (occ[rr][cc]) ok = false;
+    }
+    if (!ok) continue;
+    const id = "b" + nextId++;
+    for (let i = 0; i < len; i++) {
+      const rr = orientation === "H" ? r : r + i;
+      const cc = orientation === "H" ? c + i : c;
+      occ[rr][cc] = id;
+    }
+    buses.push({ id, orientation, r, c, len });
+    filled += len;
+  }
+  return buses;
+}
+
+// 敷き詰めたバス（向き未定）から、剥がせる順に dir を確定させていく。
+// 詰まって剥がせなくなったら null を返す（呼び出し側で置き直す）。
+function peelOrder(rawBuses, gridW, gridH) {
+  const remaining = new Map(rawBuses.map((b) => [b.id, b]));
+  const order = [];
+  function isClear(bus, dir) {
+    const path = pathCells(Object.assign({}, bus, { dir }), gridW, gridH);
+    for (const [r, c] of path) {
+      for (const other of remaining.values()) {
+        if (other.id === bus.id) continue;
+        for (const [orr, occc] of cellsOf(other)) {
+          if (orr === r && occc === c) return false;
+        }
+      }
+    }
+    return true;
+  }
+  while (remaining.size > 0) {
+    const candidates = [];
+    for (const b of remaining.values()) {
+      const dirs = b.orientation === "H" ? ["L", "R"] : ["U", "D"];
+      for (const dir of dirs) {
+        if (isClear(b, dir)) candidates.push({ id: b.id, dir, len: b.len });
+      }
+    }
+    if (candidates.length === 0) return null;
+    // レイの長い剥がし候補を優先（arrowのpeelと同じ重み付け）。
+    const weighted = candidates.map((cd) => ({ ...cd, w: Math.pow(cd.len + 1, 1.5) }));
+    const totalW = weighted.reduce((s, x) => s + x.w, 0);
+    let roll = Math.random() * totalW;
+    let picked = weighted[weighted.length - 1];
+    for (const cd of weighted) {
+      if (roll <= cd.w) {
+        picked = cd;
+        break;
+      }
+      roll -= cd.w;
+    }
+    const bus = remaining.get(picked.id);
+    order.push(Object.assign({}, bus, { dir: picked.dir }));
+    remaining.delete(picked.id);
+  }
+  return order;
+}
+
+const PALETTE = ["red", "blue", "green", "orange", "purple", "teal", "pink", "yellow"];
+
+// escapable かつ枠が空いていれば、今のキュー先頭と色が合うものを優先し、
+// 無ければ最初に見つかったものをタップする、という素朴な貪欲方針。
+// これで解けてしまう面は「先読み不要」なので、生成時にはじく対象にする。
+function naiveGreedySolves(level) {
+  const state = initialState(level);
+  const seen = new Set();
+  while (true) {
+    if (isWin(state, level)) return true;
+    if (isStuck(state, level)) return false;
+    const options = escapableBuses(state, level);
+    if (options.length === 0) return false;
+    const frontColor = state.qIdx < level.queue.length ? level.queue[state.qIdx] : null;
+    const preferred = options.find((id) => level.busesById[id].color === frontColor);
+    applyTap(state, preferred || options[0], level);
+    const k = state.qIdx + "|" + [...state.boardRemaining].sort().join(",");
+    if (seen.has(k)) return false; // 保険（理論上は起きないはず）
+    seen.add(k);
+  }
+}
+
+function shuffled(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function generateLevel(opts) {
+  opts = Object.assign(
+    {
+      gridW: 6,
+      gridH: 6,
+      parkingCapacity: 3,
+      density: 0.55,
+      lenWeights: [
+        [1, 0.35],
+        [2, 0.45],
+        [3, 0.2],
+      ],
+      maxPlaceAttempts: 200,
+      maxPlacementRetries: 40,
+      maxQueueShuffles: 300,
+    },
+    opts
+  );
+  for (let placeTry = 0; placeTry < opts.maxPlacementRetries; placeTry++) {
+    const raw = placeBuses(opts.gridW, opts.gridH, opts);
+    if (raw.length === 0) continue;
+    const order = peelOrder(raw, opts.gridW, opts.gridH);
+    if (!order) continue;
+    const buses = order.map((b, i) =>
+      Object.assign({}, b, { color: PALETTE[i % PALETTE.length] })
+    );
+    const level = buildLevel({
+      gridW: opts.gridW,
+      gridH: opts.gridH,
+      parkingCapacity: opts.parkingCapacity,
+      buses,
+      queue: [],
+    });
+    const multiset = [];
+    for (const b of buses) for (let i = 0; i < b.len; i++) multiset.push(b.color);
+
+    let fallback = null;
+    for (let q = 0; q < opts.maxQueueShuffles; q++) {
+      level.queue = shuffled(multiset);
+      if (!verifySolvable(level)) continue;
+      if (!fallback) fallback = level.queue.slice();
+      if (!naiveGreedySolves(level)) {
+        return buildLevel({
+          gridW: opts.gridW,
+          gridH: opts.gridH,
+          parkingCapacity: opts.parkingCapacity,
+          buses,
+          queue: level.queue,
+        });
+      }
+    }
+    if (fallback) {
+      return buildLevel({
+        gridW: opts.gridW,
+        gridH: opts.gridH,
+        parkingCapacity: opts.parkingCapacity,
+        buses,
+        queue: fallback,
+      });
+    }
+  }
+  return null; // 呼び出し側でリトライ or 固定レベルへのフォールバック
+}
+
+// ---------- v1 検証用レベル（手作り）。生成器の対照用に残す ----------
 // b1 が抜けないと b2 (同じ行, 左側をふさぐ) と b5 (同じ列, 上側をふさぐ) が
 // 脱出できない、という依存関係だけを持つ最小構成。
 const LEVEL_1 = {
@@ -364,13 +585,26 @@ const LEVEL_1 = {
 // Node (`node -e` 等) からこのファイルの純粋ロジックだけを取り出して
 // 検証したい場合のためのフック。ブラウザでは何もしない。
 if (typeof module !== "undefined") {
-  module.exports = { buildLevel, verifySolvable, LEVEL_1, initialState, escapableBuses, applyTap, isWin, isStuck };
+  module.exports = {
+    buildLevel,
+    verifySolvable,
+    LEVEL_1,
+    initialState,
+    escapableBuses,
+    applyTap,
+    isWin,
+    isStuck,
+    generateLevel,
+    placeBuses,
+    peelOrder,
+    naiveGreedySolves,
+  };
 }
 
 // ---------- DOM 描画 & 操作（ここから下はブラウザ専用） ----------
 if (typeof window !== "undefined" && typeof document !== "undefined") {
-  let level = buildLevel(LEVEL_1);
-  let state = initialState(level);
+  let level;
+  let state;
 
   const boardEl = document.getElementById("board");
   const parkingEl = document.getElementById("parking");
@@ -378,8 +612,14 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   const overlayEl = document.getElementById("overlay");
   const overlayTextEl = document.getElementById("overlay-text");
 
+  const forceStatic = new URLSearchParams(location.search).get("level") === "1";
+
   function newGame() {
-    level = buildLevel(LEVEL_1);
+    if (forceStatic) {
+      level = buildLevel(LEVEL_1);
+    } else {
+      level = generateLevel({}) || buildLevel(LEVEL_1);
+    }
     state = initialState(level);
     render();
   }
@@ -468,13 +708,13 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   }
 
   document.getElementById("overlay-restart").addEventListener("click", newGame);
+  document.getElementById("regenerate").addEventListener("click", newGame);
 
-  const params = new URLSearchParams(location.search);
-  if (params.get("verify") === "1") {
-    console.log("verifySolvable(LEVEL_1) =", verifySolvable(level));
+  newGame();
+
+  if (new URLSearchParams(location.search).get("verify") === "1") {
+    console.log("verifySolvable(level) =", verifySolvable(level));
   }
-
-  render();
 }
 </script>
 </body>
