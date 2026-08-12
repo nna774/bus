@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>バス渋滞パズル（仮）</title>
+<style>
+  :root {
+    --cell: 56px;
+    --gap: 4px;
+    --bg: #12141c;
+    --panel: #1c1f2b;
+    --text: #eef0f6;
+    --muted: #6b7080;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 16px;
+  }
+  #app {
+    width: 100%;
+    max-width: 420px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--muted);
+    margin: 0;
+    text-align: center;
+  }
+  .panel {
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 10px;
+  }
+  .queue {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-height: 34px;
+  }
+  .person {
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.15);
+    flex: none;
+  }
+  .person.next {
+    border-color: #fff;
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+  }
+  .parking {
+    display: flex;
+    gap: 8px;
+  }
+  .slot {
+    flex: 1;
+    height: 44px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: #fff;
+    border: 2px dashed rgba(255,255,255,0.15);
+    background: transparent;
+  }
+  .slot.filled {
+    border-style: solid;
+    border-color: rgba(0,0,0,0.25);
+  }
+  .board {
+    position: relative;
+    display: grid;
+    gap: var(--gap);
+    justify-content: center;
+    background: #0b0d13;
+    border-radius: 8px;
+    padding: var(--gap);
+  }
+  .board .cell {
+    width: var(--cell);
+    height: var(--cell);
+    background: rgba(255,255,255,0.03);
+    border-radius: 4px;
+  }
+  .bus {
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(0,0,0,0.55);
+    font-weight: 700;
+    font-size: 16px;
+    cursor: pointer;
+    opacity: 0.5;
+    transition: opacity 0.15s, transform 0.15s;
+    user-select: none;
+  }
+  .bus.escapable {
+    opacity: 1;
+  }
+  .bus.escapable:active {
+    transform: scale(0.96);
+  }
+  .bus.h { flex-direction: row; }
+  .bus.v { flex-direction: column; }
+  .bus.dir-r { justify-content: flex-end; }
+  .bus.dir-l { justify-content: flex-start; }
+  .bus.dir-d { justify-content: flex-end; }
+  .bus.dir-u { justify-content: flex-start; }
+  .bus.shake {
+    animation: shake 0.25s;
+  }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-4px); }
+    75% { transform: translateX(4px); }
+  }
+  .cap-badge {
+    padding: 0 6px;
+  }
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.7);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    font-size: 22px;
+    font-weight: 700;
+  }
+  .overlay.hidden { display: none; }
+  .overlay button {
+    font-size: 15px;
+    padding: 8px 20px;
+    border-radius: 8px;
+    border: none;
+    background: #fff;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>バス渋滞パズル（仮）</h1>
+  <div class="panel">
+    <div id="queue" class="queue"></div>
+  </div>
+  <div class="panel">
+    <div id="parking" class="parking"></div>
+  </div>
+  <div id="board" class="board"></div>
+</div>
+<div id="overlay" class="overlay hidden">
+  <div id="overlay-text"></div>
+  <button id="overlay-restart">もう一度</button>
+</div>
+<script>
+"use strict";
+
+// ---------- 色 ----------
+const COLOR_HEX = {
+  red: "#e74c3c",
+  blue: "#3498db",
+  green: "#27ae60",
+  orange: "#f39c12",
+  purple: "#9b59b6",
+};
+
+// ---------- 純粋ロジック（Node からも呼べる。DOM に触らない） ----------
+
+function buildLevel(def) {
+  const busesById = {};
+  for (const b of def.buses) busesById[b.id] = b;
+  return Object.assign({}, def, { busesById });
+}
+
+function cellsOf(bus) {
+  const cells = [];
+  if (bus.orientation === "H") {
+    for (let i = 0; i < bus.len; i++) cells.push([bus.r, bus.c + i]);
+  } else {
+    for (let i = 0; i < bus.len; i++) cells.push([bus.r + i, bus.c]);
+  }
+  return cells;
+}
+
+// バスの進行方向の先、盤外に出るまでのセル列。先端が既に盤端ならから配列。
+function pathCells(bus, gridW, gridH) {
+  const cells = [];
+  if (bus.orientation === "H") {
+    if (bus.dir === "R") {
+      for (let c = bus.c + bus.len; c < gridW; c++) cells.push([bus.r, c]);
+    } else {
+      for (let c = bus.c - 1; c >= 0; c--) cells.push([bus.r, c]);
+    }
+  } else {
+    if (bus.dir === "D") {
+      for (let r = bus.r + bus.len; r < gridH; r++) cells.push([r, bus.c]);
+    } else {
+      for (let r = bus.r - 1; r >= 0; r--) cells.push([r, bus.c]);
+    }
+  }
+  return cells;
+}
+
+function occupancyMap(boardRemaining, level) {
+  const map = new Map();
+  for (const id of boardRemaining) {
+    for (const [r, c] of cellsOf(level.busesById[id])) map.set(r + "," + c, id);
+  }
+  return map;
+}
+
+function isEscapableGeometry(bus, occMap, level) {
+  for (const [r, c] of pathCells(bus, level.gridW, level.gridH)) {
+    if (occMap.has(r + "," + c)) return false;
+  }
+  return true;
+}
+
+function hasFreeSlot(state) {
+  return state.parking.some((s) => s === null);
+}
+
+// 現在タップして駐車場へ移動できるバスの id 一覧
+function escapableBuses(state, level) {
+  if (!hasFreeSlot(state)) return [];
+  const occ = occupancyMap(state.boardRemaining, level);
+  const out = [];
+  for (const id of state.boardRemaining) {
+    if (isEscapableGeometry(level.busesById[id], occ, level)) out.push(id);
+  }
+  return out;
+}
+
+function canTap(state, busId, level) {
+  if (state.won || state.lost) return false;
+  if (!state.boardRemaining.has(busId)) return false;
+  if (!hasFreeSlot(state)) return false;
+  const occ = occupancyMap(state.boardRemaining, level);
+  return isEscapableGeometry(level.busesById[busId], occ, level);
+}
+
+function processQueue(state, level) {
+  while (state.qIdx < level.queue.length) {
+    const frontColor = level.queue[state.qIdx];
+    const slotIdx = state.parking.findIndex((s) => s && s.color === frontColor);
+    if (slotIdx === -1) break;
+    state.parking[slotIdx].boarded++;
+    state.qIdx++;
+    if (state.parking[slotIdx].boarded === state.parking[slotIdx].cap) {
+      state.parking[slotIdx] = null;
+    }
+  }
+}
+
+// state を破壊的に変更する。事前に canTap で確認していること。
+function applyTap(state, busId, level) {
+  const bus = level.busesById[busId];
+  state.boardRemaining.delete(busId);
+  const slotIdx = state.parking.findIndex((s) => s === null);
+  state.parking[slotIdx] = { color: bus.color, boarded: 0, cap: bus.len };
+  processQueue(state, level);
+}
+
+function cloneState(state) {
+  return {
+    boardRemaining: new Set(state.boardRemaining),
+    parking: state.parking.map((s) => (s ? Object.assign({}, s) : null)),
+    qIdx: state.qIdx,
+  };
+}
+
+function isWin(state, level) {
+  return state.boardRemaining.size === 0 && state.qIdx === level.queue.length;
+}
+
+// 前進不能（先頭が誰とも合致せず、かつ新しいバスも呼べない）かどうか
+function isStuck(state, level) {
+  if (state.qIdx >= level.queue.length) return false;
+  const frontColor = level.queue[state.qIdx];
+  const hasMatch = state.parking.some((s) => s && s.color === frontColor);
+  if (hasMatch) return false;
+  const canBringNew = hasFreeSlot(state) && escapableBuses(state, level).length > 0;
+  return !canBringNew;
+}
+
+function initialState(level) {
+  return {
+    boardRemaining: new Set(level.buses.map((b) => b.id)),
+    parking: new Array(level.parkingCapacity).fill(null),
+    qIdx: 0,
+    won: false,
+    lost: false,
+  };
+}
+
+// 総当たり DFS でこのレベルにクリア可能な手順が存在するか検証する。
+// 生成器がまだ無い v1 では、手作りレベルの検算に使う。
+function verifySolvable(level) {
+  const start = initialState(level);
+  const visited = new Set();
+  function key(state) {
+    return (
+      [...state.boardRemaining].sort().join(",") +
+      "|" +
+      state.parking.map((s) => (s ? s.color + ":" + s.boarded : "_")).join(",") +
+      "|" +
+      state.qIdx
+    );
+  }
+  function dfs(state) {
+    if (isWin(state, level)) return true;
+    if (isStuck(state, level)) return false;
+    const k = key(state);
+    if (visited.has(k)) return false;
+    visited.add(k);
+    for (const busId of escapableBuses(state, level)) {
+      const next = cloneState(state);
+      applyTap(next, busId, level);
+      if (dfs(next)) return true;
+    }
+    return false;
+  }
+  return dfs(start);
+}
+
+// ---------- v1 検証用レベル（手作り。生成器は未実装） ----------
+// b1 が抜けないと b2 (同じ行, 左側をふさぐ) と b5 (同じ列, 上側をふさぐ) が
+// 脱出できない、という依存関係だけを持つ最小構成。
+const LEVEL_1 = {
+  gridW: 5,
+  gridH: 5,
+  parkingCapacity: 3,
+  buses: [
+    { id: "b1", color: "red", orientation: "H", r: 2, c: 1, len: 2, dir: "L" },
+    { id: "b2", color: "blue", orientation: "H", r: 2, c: 3, len: 2, dir: "L" },
+    { id: "b3", color: "green", orientation: "V", r: 3, c: 0, len: 2, dir: "D" },
+    { id: "b4", color: "orange", orientation: "V", r: 0, c: 4, len: 2, dir: "U" },
+    { id: "b5", color: "purple", orientation: "V", r: 3, c: 1, len: 2, dir: "U" },
+  ],
+  queue: [
+    "red", "red", "green", "green", "orange", "orange",
+    "blue", "blue", "purple", "purple",
+  ],
+};
+
+// Node (`node -e` 等) からこのファイルの純粋ロジックだけを取り出して
+// 検証したい場合のためのフック。ブラウザでは何もしない。
+if (typeof module !== "undefined") {
+  module.exports = { buildLevel, verifySolvable, LEVEL_1, initialState, escapableBuses, applyTap, isWin, isStuck };
+}
+
+// ---------- DOM 描画 & 操作（ここから下はブラウザ専用） ----------
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  let level = buildLevel(LEVEL_1);
+  let state = initialState(level);
+
+  const boardEl = document.getElementById("board");
+  const parkingEl = document.getElementById("parking");
+  const queueEl = document.getElementById("queue");
+  const overlayEl = document.getElementById("overlay");
+  const overlayTextEl = document.getElementById("overlay-text");
+
+  function newGame() {
+    level = buildLevel(LEVEL_1);
+    state = initialState(level);
+    render();
+  }
+
+  function onTapBus(busId, el) {
+    if (state.won || state.lost) return;
+    if (!canTap(state, busId, level)) {
+      el.classList.remove("shake");
+      void el.offsetWidth;
+      el.classList.add("shake");
+      return;
+    }
+    applyTap(state, busId, level);
+    if (isWin(state, level)) state.won = true;
+    else if (isStuck(state, level)) state.lost = true;
+    render();
+  }
+
+  function render() {
+    renderBoard();
+    renderParking();
+    renderQueue();
+    renderOverlay();
+  }
+
+  function renderBoard() {
+    boardEl.style.gridTemplateColumns = `repeat(${level.gridW}, var(--cell))`;
+    boardEl.style.gridTemplateRows = `repeat(${level.gridH}, var(--cell))`;
+    boardEl.innerHTML = "";
+    for (let i = 0; i < level.gridW * level.gridH; i++) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      boardEl.appendChild(cell);
+    }
+    const escapable = new Set(escapableBuses(state, level));
+    for (const id of state.boardRemaining) {
+      const bus = level.busesById[id];
+      const el = document.createElement("div");
+      el.className = `bus ${bus.orientation.toLowerCase()} dir-${bus.dir.toLowerCase()}`;
+      if (escapable.has(id)) el.classList.add("escapable");
+      el.style.background = COLOR_HEX[bus.color];
+      el.style.gridRow = bus.orientation === "V" ? `${bus.r + 1} / span ${bus.len}` : `${bus.r + 1}`;
+      el.style.gridColumn = bus.orientation === "H" ? `${bus.c + 1} / span ${bus.len}` : `${bus.c + 1}`;
+      el.textContent = bus.dir === "L" ? "◀" : bus.dir === "R" ? "▶" : bus.dir === "U" ? "▲" : "▼";
+      el.addEventListener("click", () => onTapBus(id, el));
+      boardEl.appendChild(el);
+    }
+  }
+
+  function renderParking() {
+    parkingEl.innerHTML = "";
+    for (const slot of state.parking) {
+      const el = document.createElement("div");
+      if (slot) {
+        el.className = "slot filled";
+        el.style.background = COLOR_HEX[slot.color];
+        el.textContent = `${slot.boarded}/${slot.cap}`;
+      } else {
+        el.className = "slot";
+        el.textContent = "空き";
+      }
+      parkingEl.appendChild(el);
+    }
+  }
+
+  function renderQueue() {
+    queueEl.innerHTML = "";
+    for (let i = state.qIdx; i < level.queue.length; i++) {
+      const el = document.createElement("div");
+      el.className = "person" + (i === state.qIdx ? " next" : "");
+      el.style.background = COLOR_HEX[level.queue[i]];
+      queueEl.appendChild(el);
+    }
+  }
+
+  function renderOverlay() {
+    if (state.won) {
+      overlayTextEl.textContent = "クリア！";
+      overlayEl.classList.remove("hidden");
+    } else if (state.lost) {
+      overlayTextEl.textContent = "ゲームオーバー";
+      overlayEl.classList.remove("hidden");
+    } else {
+      overlayEl.classList.add("hidden");
+    }
+  }
+
+  document.getElementById("overlay-restart").addEventListener("click", newGame);
+
+  const params = new URLSearchParams(location.search);
+  if (params.get("verify") === "1") {
+    console.log("verifySolvable(LEVEL_1) =", verifySolvable(level));
+  }
+
+  render();
+}
+</script>
+</body>
+</html>
