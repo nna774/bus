@@ -58,29 +58,53 @@
     border-radius: 12px;
     padding: 10px;
   }
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .controls select {
+    font-size: 12px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.2);
+    background: var(--panel);
+    color: var(--text);
+  }
   .queue {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
     min-height: 34px;
   }
-  .person {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    border: 2px solid rgba(255,255,255,0.15);
-    flex: none;
+  .run {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 14px;
+    background: rgba(255,255,255,0.05);
   }
-  .person.next {
-    border-color: #fff;
-    box-shadow: 0 0 0 2px rgba(255,255,255,0.35);
+  .run.next {
+    background: rgba(255,255,255,0.18);
+    box-shadow: 0 0 0 2px rgba(255,255,255,0.5);
+  }
+  .person {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid rgba(0,0,0,0.25);
+    flex: none;
   }
   .parking {
     display: flex;
-    gap: 8px;
+    gap: 6px;
   }
   .slot {
     flex: 1;
+    min-width: 0;
     height: 44px;
     border-radius: 8px;
     display: flex;
@@ -175,6 +199,21 @@
   <div class="header">
     <h1>バス渋滞パズル（仮）</h1>
     <button id="regenerate">作り直す</button>
+  </div>
+  <div class="controls">
+    <label>盤面 <select id="opt-grid">
+      <option value="5">5x5</option>
+      <option value="6" selected>6x6</option>
+      <option value="7">7x7</option>
+    </select></label>
+    <label>駐車場 <select id="opt-parking">
+      <option value="2">2</option>
+      <option value="3" selected>3</option>
+      <option value="4">4</option>
+      <option value="5">5</option>
+      <option value="6">6</option>
+      <option value="7">7</option>
+    </select></label>
   </div>
   <div class="panel">
     <div id="queue" class="queue"></div>
@@ -613,15 +652,32 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   const overlayTextEl = document.getElementById("overlay-text");
 
   const forceStatic = new URLSearchParams(location.search).get("level") === "1";
+  const gridSel = document.getElementById("opt-grid");
+  const parkingSel = document.getElementById("opt-parking");
+  const appEl = document.getElementById("app");
 
   function newGame() {
     if (forceStatic) {
       level = buildLevel(LEVEL_1);
     } else {
-      level = generateLevel({}) || buildLevel(LEVEL_1);
+      const n = Number(gridSel.value);
+      level =
+        generateLevel({
+          gridW: n,
+          gridH: n,
+          parkingCapacity: Number(parkingSel.value),
+        }) || buildLevel(LEVEL_1);
     }
     state = initialState(level);
     render();
+  }
+
+  // 盤面が画面幅に収まるようにセルの大きさを決める。
+  function fitCell() {
+    const gap = 4;
+    const avail = appEl.clientWidth - 2 * gap - 20;
+    const cell = Math.floor((avail - (level.gridW - 1) * gap) / level.gridW);
+    document.documentElement.style.setProperty("--cell", Math.max(24, Math.min(56, cell)) + "px");
   }
 
   function onTapBus(busId, el) {
@@ -639,6 +695,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   }
 
   function render() {
+    fitCell();
     renderBoard();
     renderParking();
     renderQueue();
@@ -687,11 +744,20 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   function renderQueue() {
     queueEl.innerHTML = "";
+    let runEl = null;
+    let runColor = null;
     for (let i = state.qIdx; i < level.queue.length; i++) {
+      const color = level.queue[i];
+      if (color !== runColor) {
+        runEl = document.createElement("div");
+        runEl.className = "run" + (i === state.qIdx ? " next" : "");
+        queueEl.appendChild(runEl);
+        runColor = color;
+      }
       const el = document.createElement("div");
-      el.className = "person" + (i === state.qIdx ? " next" : "");
-      el.style.background = COLOR_HEX[level.queue[i]];
-      queueEl.appendChild(el);
+      el.className = "person";
+      el.style.background = COLOR_HEX[color];
+      runEl.appendChild(el);
     }
   }
 
@@ -709,6 +775,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   document.getElementById("overlay-restart").addEventListener("click", newGame);
   document.getElementById("regenerate").addEventListener("click", newGame);
+  gridSel.addEventListener("change", newGame);
+  parkingSel.addEventListener("change", newGame);
+  window.addEventListener("resize", () => {
+    fitCell();
+  });
 
   newGame();
 
