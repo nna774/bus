@@ -236,24 +236,25 @@
       <option value="8">8x8</option>
       <option value="10">10x10</option>
     </select></label>
-    <label>定員 <select id="opt-cap">
-      <option value="1">x1</option>
-      <option value="2" selected>x2</option>
-      <option value="3">x3</option>
-      <option value="4">x4</option>
+    <label>定員上限 <select id="opt-cap">
+      <option value="2">2</option>
+      <option value="3">3</option>
+      <option value="4">4</option>
+      <option value="6" selected>6</option>
+      <option value="8">8</option>
     </select></label>
     <label>窓 <select id="opt-window">
       <option value="1">1</option>
       <option value="2">2</option>
-      <option value="3" selected>3</option>
+      <option value="3">3</option>
       <option value="4">4</option>
-      <option value="5">5</option>
+      <option value="5" selected>5</option>
     </select></label>
     <label>駐車場 <select id="opt-parking">
       <option value="2">2</option>
-      <option value="3" selected>3</option>
+      <option value="3">3</option>
       <option value="4">4</option>
-      <option value="5">5</option>
+      <option value="5" selected>5</option>
       <option value="6">6</option>
       <option value="7">7</option>
     </select></label>
@@ -301,9 +302,10 @@ const COLOR_SYMBOL = {
 // ---------- 純粋ロジック（Node からも呼べる。DOM に触らない） ----------
 
 function buildLevel(def) {
+  const buses = def.buses.map((b) => Object.assign({ cap: b.len }, b));
   const busesById = {};
-  for (const b of def.buses) busesById[b.id] = b;
-  return Object.assign({ windowSize: 1, capScale: 1 }, def, { busesById });
+  for (const b of buses) busesById[b.id] = b;
+  return Object.assign({ windowSize: 1 }, def, { buses, busesById });
 }
 
 function cellsOf(bus) {
@@ -401,7 +403,7 @@ function applyTap(state, busId, level) {
   const bus = level.busesById[busId];
   state.boardRemaining.delete(busId);
   const slotIdx = state.parking.findIndex((s) => s === null);
-  state.parking[slotIdx] = { color: bus.color, boarded: 0, cap: bus.len * level.capScale };
+  state.parking[slotIdx] = { color: bus.color, boarded: 0, cap: bus.cap };
   processQueue(state, level);
 }
 
@@ -597,7 +599,7 @@ function naiveGreedySolves(level) {
 // タップ順 buses を前から再生しながらキューを組み立てる。駐車中のバスの残り定員から
 // 次に乗る人の色を選ぶので、タップ順がそのまま解の一つになる。
 // tightness が高いほど、枠が空き次第すぐ次のバスを呼ぶ（駐車場が詰まった状態が続く）。
-function constructQueue(buses, parkingCapacity, capScale, tightness) {
+function constructQueue(buses, parkingCapacity, tightness) {
   const queue = [];
   const parked = [];
   let next = 0;
@@ -605,7 +607,7 @@ function constructQueue(buses, parkingCapacity, capScale, tightness) {
     const canTap = next < buses.length && parked.length < parkingCapacity;
     if (canTap && (parked.length === 0 || Math.random() < tightness)) {
       const b = buses[next++];
-      parked.push({ color: b.color, remaining: b.len * capScale });
+      parked.push({ color: b.color, remaining: b.cap });
       continue;
     }
     const idx = Math.floor(Math.random() * parked.length);
@@ -638,9 +640,10 @@ function generateLevel(opts) {
     {
       gridW: 6,
       gridH: 6,
-      parkingCapacity: 3,
-      windowSize: 1,
-      capScale: 1,
+      parkingCapacity: 5,
+      windowSize: 5,
+      capMin: 2,
+      capMax: 6,
       density: 0.55,
       lenWeights: [
         [1, 0.35],
@@ -660,22 +663,25 @@ function generateLevel(opts) {
     if (raw.length === 0) continue;
     const order = peelOrder(raw, opts.gridW, opts.gridH);
     if (!order) continue;
+    const capMin = Math.min(opts.capMin, opts.capMax);
     const buses = order.map((b, i) =>
-      Object.assign({}, b, { color: PALETTE[i % PALETTE.length] })
+      Object.assign({}, b, {
+        color: PALETTE[i % PALETTE.length],
+        cap: capMin + Math.floor(Math.random() * (opts.capMax - capMin + 1)),
+      })
     );
     const level = buildLevel({
       gridW: opts.gridW,
       gridH: opts.gridH,
       parkingCapacity: opts.parkingCapacity,
       windowSize: opts.windowSize,
-      capScale: opts.capScale,
       buses,
       queue: [],
     });
     let fallback = null;
     for (let q = 0; q < opts.maxQueueTries; q++) {
       const tightness = 0.3 + 0.7 * Math.random();
-      level.queue = constructQueue(buses, opts.parkingCapacity, opts.capScale, tightness);
+      level.queue = constructQueue(buses, opts.parkingCapacity, tightness);
       if (!replaySolves(level)) continue;
       if (!fallback) fallback = level.queue.slice();
       const base = level.queue;
@@ -693,8 +699,7 @@ function generateLevel(opts) {
             gridH: opts.gridH,
             parkingCapacity: opts.parkingCapacity,
             windowSize: opts.windowSize,
-            capScale: opts.capScale,
-            buses,
+                  buses,
             queue: level.queue,
           });
         }
@@ -706,8 +711,7 @@ function generateLevel(opts) {
         gridH: opts.gridH,
         parkingCapacity: opts.parkingCapacity,
         windowSize: opts.windowSize,
-        capScale: opts.capScale,
-        buses,
+          buses,
         queue: fallback,
       });
     }
@@ -784,7 +788,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           gridH: n,
           parkingCapacity: Number(parkingSel.value),
           windowSize: Number(windowSel.value),
-          capScale: Number(capSel.value),
+          capMax: Number(capSel.value),
         }) || buildLevel(LEVEL_1);
     }
     state = initialState(level);
@@ -846,7 +850,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       sym.className = "sym";
       sym.textContent = COLOR_SYMBOL[bus.color];
       el.appendChild(sym);
-      el.appendChild(document.createTextNode(`${arrow}${bus.len * level.capScale}`));
+      el.appendChild(document.createTextNode(`${arrow}${bus.cap}`));
       el.addEventListener("click", () => onTapBus(id, el));
       boardEl.appendChild(el);
     }
