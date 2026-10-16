@@ -1,5 +1,6 @@
 // 同期生成では重い盤面のレベルを事前生成し、index.html の #pregen ブロックに埋め込む。
-// 使い方: node tools/pregen.js [サイズ] [駐車場枠数] [本数]
+// 使い方: node tools/pregen.js [サイズ] [駐車場枠数] [窓の大きさ] [本数]
+// プールのキーは「サイズ:窓の大きさ」。同じキーは上書きし、他のキーは残す。
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -14,13 +15,15 @@ const PALETTE = ["red", "blue", "green", "orange", "purple", "teal", "pink", "ye
 
 const size = Number(process.argv[2] || 8);
 const parking = Number(process.argv[3] || 5);
-const count = Number(process.argv[4] || 12);
+const windowSize = Number(process.argv[4] || 1);
+const count = Number(process.argv[5] || 12);
 
 function encode(level) {
   return {
     gridW: level.gridW,
     gridH: level.gridH,
     parkingCapacity: level.parkingCapacity,
+    windowSize: level.windowSize,
     buses: level.buses.map((b) => [b.r, b.c, b.len, b.orientation, b.dir, PALETTE.indexOf(b.color)]),
     queue: level.queue.map((c) => PALETTE.indexOf(c)).join(""),
   };
@@ -28,13 +31,15 @@ function encode(level) {
 
 const levels = [];
 while (levels.length < count) {
-  const level = generateLevel({ gridW: size, gridH: size, parkingCapacity: parking });
+  const level = generateLevel({ gridW: size, gridH: size, parkingCapacity: parking, windowSize });
   if (!level || !verifySolvable(level)) continue;
   levels.push(encode(level));
   console.error(`${levels.length}/${count}`);
 }
 
-const json = JSON.stringify({ [`${size}x${size}`]: levels });
+const existing = JSON.parse(html.match(/<script id="pregen" type="application\/json">([\s\S]*?)<\/script>/)[1]);
+existing[`${size}x${size}:${windowSize}`] = levels;
+const json = JSON.stringify(existing);
 const out = html.replace(
   /(<script id="pregen" type="application\/json">)[\s\S]*?(<\/script>)/,
   () => `<script id="pregen" type="application/json">${json}</script>`
