@@ -104,11 +104,17 @@
     opacity: 0.85;
   }
   .person {
-    width: 14px;
-    height: 14px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
     border: 1px solid rgba(0,0,0,0.25);
     flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    line-height: 1;
+    color: rgba(0,0,0,0.6);
   }
   .parking {
     display: flex;
@@ -148,6 +154,7 @@
     border-radius: 4px;
   }
   .bus {
+    position: relative;
     border-radius: 8px;
     display: flex;
     align-items: center;
@@ -160,6 +167,15 @@
     transition: opacity 0.15s, transform 0.15s;
     user-select: none;
   }
+  .bus .sym {
+    position: absolute;
+    top: 2px;
+    left: 4px;
+    font-size: 12px;
+    line-height: 1;
+  }
+  .bus.dir-l .sym { left: auto; right: 4px; }
+  .bus.dir-u .sym { top: auto; bottom: 2px; }
   .bus.escapable {
     opacity: 1;
   }
@@ -258,15 +274,28 @@
 "use strict";
 
 // ---------- 色 ----------
+// Okabe-Ito を基に、色覚多様性でも区別しやすい配色にしている。
 const COLOR_HEX = {
-  red: "#e74c3c",
-  blue: "#3498db",
-  green: "#27ae60",
-  orange: "#f39c12",
-  purple: "#9b59b6",
-  teal: "#1abc9c",
-  pink: "#e84393",
-  yellow: "#f1c40f",
+  red: "#d55e00",
+  blue: "#0072b2",
+  green: "#009e73",
+  orange: "#e69f00",
+  purple: "#7b4fc9",
+  teal: "#56b4e9",
+  pink: "#cc79a7",
+  yellow: "#f0e442",
+};
+
+// 色だけに頼らず見分けられるよう、色ごとに記号を割り当てる。
+const COLOR_SYMBOL = {
+  red: "■",
+  blue: "●",
+  green: "♣",
+  orange: "◆",
+  purple: "★",
+  teal: "✚",
+  pink: "♥",
+  yellow: "✱",
 };
 
 // ---------- 純粋ロジック（Node からも呼べる。DOM に触らない） ----------
@@ -813,7 +842,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       el.style.gridRow = bus.orientation === "V" ? `${bus.r + 1} / span ${bus.len}` : `${bus.r + 1}`;
       el.style.gridColumn = bus.orientation === "H" ? `${bus.c + 1} / span ${bus.len}` : `${bus.c + 1}`;
       const arrow = bus.dir === "L" ? "◀" : bus.dir === "R" ? "▶" : bus.dir === "U" ? "▲" : "▼";
-      el.textContent = `${arrow}${bus.len * level.capScale}`;
+      const sym = document.createElement("span");
+      sym.className = "sym";
+      sym.textContent = COLOR_SYMBOL[bus.color];
+      el.appendChild(sym);
+      el.appendChild(document.createTextNode(`${arrow}${bus.len * level.capScale}`));
       el.addEventListener("click", () => onTapBus(id, el));
       boardEl.appendChild(el);
     }
@@ -826,7 +859,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (slot) {
         el.className = "slot filled";
         el.style.background = COLOR_HEX[slot.color];
-        el.textContent = `${slot.boarded}/${slot.cap}`;
+        el.textContent = `${COLOR_SYMBOL[slot.color]} ${slot.boarded}/${slot.cap}`;
       } else {
         el.className = "slot";
         el.textContent = "空き";
@@ -856,6 +889,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       const el = document.createElement("div");
       el.className = "person";
       el.style.background = COLOR_HEX[color];
+      el.textContent = COLOR_SYMBOL[color];
       runEl.appendChild(el);
     });
     if (windowEl.children.length > 0) queueEl.appendChild(windowEl);
