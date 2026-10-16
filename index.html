@@ -709,6 +709,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     for (let i = 0; i < level.gridW * level.gridH; i++) {
       const cell = document.createElement("div");
       cell.className = "cell";
+      cell.style.gridRow = String(Math.floor(i / level.gridW) + 1);
+      cell.style.gridColumn = String((i % level.gridW) + 1);
       boardEl.appendChild(cell);
     }
     const escapable = new Set(escapableBuses(state, level));
